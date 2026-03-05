@@ -398,7 +398,51 @@
     @media (max-width: 380px) {
       .cal-grid { grid-template-columns: repeat(5,1fr); gap: 5px; }
     }
+
+    /* ── SYNC CARD ── */
+    .sync-card {
+      background: linear-gradient(135deg, rgba(201,177,255,.12) 0%, rgba(255,183,213,.12) 100%);
+      border: 1.5px solid rgba(201,177,255,.4);
+      border-radius: var(--r);
+      padding: 14px 18px;
+      margin-bottom: 16px;
+    }
+    .sync-header {
+      display: flex; align-items: center; justify-content: space-between;
+      font-weight: 700; font-size: .95rem; color: var(--text);
+    }
+    .sync-status { font-size: .8rem; font-weight: 600; color: var(--muted); }
+    .sync-status.ok { color: #7ECFB0; }
+    .sync-body { margin-top: 10px; }
+    .sync-desc { font-size: .85rem; color: var(--muted); margin-bottom: 10px; }
+    .sync-row { display: flex; gap: 8px; align-items: center; }
+    .sync-email-input {
+      flex: 1; border: 1.5px solid rgba(201,177,255,.5); border-radius: 12px;
+      padding: 9px 14px; font-size: .9rem; font-family: 'Nunito', sans-serif;
+      background: #fff; color: var(--text); outline: none;
+    }
+    .sync-email-input:focus { border-color: var(--purple); }
+    .sync-send-btn {
+      background: linear-gradient(135deg, var(--purple), var(--pink));
+      color: #fff; border: none; border-radius: 12px; padding: 9px 16px;
+      font-size: .85rem; font-weight: 700; font-family: 'Nunito', sans-serif;
+      cursor: pointer; white-space: nowrap;
+    }
+    .sync-msg { font-size: .82rem; margin-top: 8px; color: var(--muted); min-height: 1.2em; }
+    .sync-msg.ok  { color: #7ECFB0; }
+    .sync-msg.err { color: #FF6B9D; }
+    .sync-signed-in {
+      display: flex; align-items: center; justify-content: space-between;
+      font-size: .88rem; gap: 8px;
+    }
+    .sync-signout-btn {
+      background: transparent; border: 1.5px solid rgba(201,177,255,.5);
+      border-radius: 10px; padding: 5px 12px; font-size: .8rem; font-weight: 700;
+      color: var(--muted); cursor: pointer; font-family: 'Nunito', sans-serif;
+    }
+    .sync-signout-btn:hover { border-color: var(--purple); color: var(--text); }
   </style>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 </head>
 <body>
 <div class="container">
@@ -467,6 +511,23 @@
     </div>
 
     <button class="settings-save" onclick="saveSettings()">✨ Save Settings</button>
+  </div>
+
+  <!-- SYNC CARD -->
+  <div class="sync-card" id="sync-card">
+    <div class="sync-header">
+      <span>☁️ Save Your Progress</span>
+      <span class="sync-status" id="sync-status">Not signed in</span>
+    </div>
+    <div class="sync-body" id="sync-body">
+      <p class="sync-desc">Enter your email to save and sync your progress across all devices.</p>
+      <div class="sync-row">
+        <input type="email" class="sync-email-input" id="sync-email" placeholder="your@email.com"
+               onkeydown="if(event.key==='Enter')sendMagicLink()" />
+        <button class="sync-send-btn" onclick="sendMagicLink()">✉️ Send Link</button>
+      </div>
+      <div class="sync-msg" id="sync-msg"></div>
+    </div>
   </div>
 
   <!-- TODAY OVERVIEW -->
@@ -744,6 +805,7 @@ function saveLocSettings(lat, lng, city, method, asr) {
   localStorage.setItem('ram-city',   city || '');
   localStorage.setItem('ram-method', method);
   localStorage.setItem('ram-asr',    asr);
+  cloudSaveSettings();
 }
 
 // ═══════════════════════════════════════════════════════
@@ -770,7 +832,7 @@ function getData(key) {
   if (raw) return JSON.parse(raw);
   return { prayers:{fajr:false,dhuhr:false,asr:false,maghrib:false,isha:false,tarawih:false}, fasting:false, quranPages:0, reflection:'', mood:'' };
 }
-function saveData(key, data) { localStorage.setItem('ram-'+key, JSON.stringify(data)); }
+function saveData(key, data) { localStorage.setItem('ram-'+key, JSON.stringify(data)); cloudSaveDay(key, data); }
 
 function prayerCount(data) { return PRAYERS.filter(p => data.prayers[p]).length; }
 function score(data) {
@@ -1291,7 +1353,7 @@ function populateSettings() {
 
 function saveSettings() {
   const dateVal = document.getElementById('start-input').value;
-  if (dateVal) localStorage.setItem('ram-start', dateVal);
+  if (dateVal) { localStorage.setItem('ram-start', dateVal); cloudSaveSettings(); }
   // method/asr already live-saved on onchange; just close
   document.getElementById('settings-panel').classList.remove('open');
   renderAll();
@@ -1415,10 +1477,149 @@ function scheduleMidnightRefresh() {
 }
 
 // ═══════════════════════════════════════════════════════
+//  SUPABASE SYNC
+// ═══════════════════════════════════════════════════════
+const SUPABASE_URL = 'https://cukkgehwlpdcelchovuu.supabase.co';
+const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImN1a2tnZWh3bHBkY2VsY2hvdnV1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzI3NDA4NTksImV4cCI6MjA4ODMxNjg1OX0.I_0cCD5rayS5A11JaH89Hjjsd3SMxCTpt40t7e8NJWQ';
+const _sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+let _currentUser = null;
+
+async function cloudSaveDay(key, data) {
+  if (!_currentUser) return;
+  try {
+    await _sb.from('tracker_days').upsert({
+      user_id:     _currentUser.id,
+      day_key:     key,
+      prayers:     data.prayers,
+      fasting:     data.fasting,
+      quran_pages: data.quranPages,
+      reflection:  data.reflection,
+      mood:        data.mood,
+      updated_at:  new Date().toISOString()
+    }, { onConflict: 'user_id,day_key' });
+  } catch(e) { console.warn('cloudSaveDay:', e); }
+}
+
+async function cloudSaveSettings() {
+  if (!_currentUser) return;
+  const loc = getLocSettings();
+  try {
+    await _sb.from('tracker_settings').upsert({
+      user_id:    _currentUser.id,
+      lat:        loc.lat,
+      lng:        loc.lng,
+      city:       loc.city,
+      method:     loc.method,
+      asr_factor: loc.asr,
+      start_date: localStorage.getItem('ram-start') || DEFAULT_START,
+      updated_at: new Date().toISOString()
+    }, { onConflict: 'user_id' });
+  } catch(e) { console.warn('cloudSaveSettings:', e); }
+}
+
+async function loadFromCloud() {
+  if (!_currentUser) return;
+  try {
+    const [{ data: days }, { data: settings }] = await Promise.all([
+      _sb.from('tracker_days').select('*').eq('user_id', _currentUser.id),
+      _sb.from('tracker_settings').select('*').eq('user_id', _currentUser.id).maybeSingle()
+    ]);
+    if (days) {
+      for (const row of days) {
+        localStorage.setItem('ram-' + row.day_key, JSON.stringify({
+          prayers:    row.prayers,
+          fasting:    row.fasting,
+          quranPages: row.quran_pages,
+          reflection: row.reflection,
+          mood:       row.mood
+        }));
+      }
+    }
+    if (settings) {
+      if (settings.lat        != null) localStorage.setItem('ram-lat',    settings.lat);
+      if (settings.lng        != null) localStorage.setItem('ram-lng',    settings.lng);
+      if (settings.city)               localStorage.setItem('ram-city',   settings.city);
+      if (settings.method)             localStorage.setItem('ram-method', settings.method);
+      if (settings.asr_factor != null) localStorage.setItem('ram-asr',    settings.asr_factor);
+      if (settings.start_date)         localStorage.setItem('ram-start',  settings.start_date);
+    }
+  } catch(e) { console.warn('loadFromCloud:', e); }
+}
+
+async function sendMagicLink() {
+  const input = document.getElementById('sync-email');
+  const email = input ? input.value.trim() : '';
+  if (!email) return;
+  const msg = document.getElementById('sync-msg');
+  msg.textContent = '⏳ Sending…';
+  msg.className = 'sync-msg';
+  const { error } = await _sb.auth.signInWithOtp({
+    email,
+    options: { emailRedirectTo: window.location.href.split('?')[0].split('#')[0] }
+  });
+  if (error) {
+    msg.textContent = '❌ ' + error.message;
+    msg.className = 'sync-msg err';
+  } else {
+    msg.textContent = '✅ Check your email for a sign-in link!';
+    msg.className = 'sync-msg ok';
+    if (input) input.value = '';
+  }
+}
+
+async function signOut() {
+  await _sb.auth.signOut();
+  _currentUser = null;
+  renderSyncUI();
+}
+
+function renderSyncUI() {
+  const statusEl = document.getElementById('sync-status');
+  const bodyEl   = document.getElementById('sync-body');
+  if (!statusEl || !bodyEl) return;
+  if (_currentUser) {
+    const email = _currentUser.email || 'your account';
+    statusEl.textContent = '✅ Synced';
+    statusEl.className   = 'sync-status ok';
+    bodyEl.innerHTML = `
+      <div class="sync-signed-in">
+        <span>Signed in as <strong>${email}</strong></span>
+        <button class="sync-signout-btn" onclick="signOut()">Sign Out</button>
+      </div>`;
+  } else {
+    statusEl.textContent = 'Not signed in';
+    statusEl.className   = 'sync-status';
+    bodyEl.innerHTML = `
+      <p class="sync-desc">Enter your email to save and sync your progress across all devices.</p>
+      <div class="sync-row">
+        <input type="email" class="sync-email-input" id="sync-email" placeholder="your@email.com"
+               onkeydown="if(event.key==='Enter')sendMagicLink()" />
+        <button class="sync-send-btn" onclick="sendMagicLink()">✉️ Send Link</button>
+      </div>
+      <div class="sync-msg" id="sync-msg"></div>`;
+  }
+}
+
+_sb.auth.onAuthStateChange(async (event, session) => {
+  _currentUser = session?.user || null;
+  if (event === 'SIGNED_IN') {
+    await loadFromCloud();
+    renderAll();
+  }
+  renderSyncUI();
+});
+
+// ═══════════════════════════════════════════════════════
 //  BOOT
 // ═══════════════════════════════════════════════════════
-renderAll();
-scheduleMidnightRefresh();
+(async () => {
+  const { data: { session } } = await _sb.auth.getSession();
+  _currentUser = session?.user || null;
+  if (_currentUser) await loadFromCloud();
+  renderAll();
+  renderSyncUI();
+  scheduleMidnightRefresh();
+})();
 </script>
 </body>
 </html>
