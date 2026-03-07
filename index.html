@@ -520,13 +520,7 @@
       <span class="sync-status" id="sync-status">Not signed in</span>
     </div>
     <div class="sync-body" id="sync-body">
-      <p class="sync-desc">Enter your email to save and sync your progress across all devices.</p>
-      <div class="sync-row">
-        <input type="email" class="sync-email-input" id="sync-email" placeholder="your@email.com"
-               onkeydown="if(event.key==='Enter')sendOtp()" />
-        <button class="sync-send-btn" onclick="sendOtp()">✉️ Send Code</button>
-      </div>
-      <div class="sync-msg" id="sync-msg"></div>
+      <p class="sync-desc">Loading…</p>
     </div>
   </div>
 
@@ -1482,13 +1476,14 @@ function scheduleMidnightRefresh() {
 const SUPABASE_URL = 'https://cukkgehwlpdcelchovuu.supabase.co';
 const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImN1a2tnZWh3bHBkY2VsY2hvdnV1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzI3NDA4NTksImV4cCI6MjA4ODMxNjg1OX0.I_0cCD5rayS5A11JaH89Hjjsd3SMxCTpt40t7e8NJWQ';
 const _sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
-let _currentUser = null;
+let _user = null;
+let _otpEmail = '';
 
 async function cloudSaveDay(key, data) {
-  if (!_currentUser) return;
+  if (!_user) return;
   try {
     await _sb.from('tracker_days').upsert({
-      user_id:     _currentUser.id,
+      user_id:     _user.id,
       day_key:     key,
       prayers:     data.prayers,
       fasting:     data.fasting,
@@ -1501,11 +1496,11 @@ async function cloudSaveDay(key, data) {
 }
 
 async function cloudSaveSettings() {
-  if (!_currentUser) return;
+  if (!_user) return;
   const loc = getLocSettings();
   try {
     await _sb.from('tracker_settings').upsert({
-      user_id:    _currentUser.id,
+      user_id:    _user.id,
       lat:        loc.lat,
       lng:        loc.lng,
       city:       loc.city,
@@ -1518,11 +1513,11 @@ async function cloudSaveSettings() {
 }
 
 async function loadFromCloud() {
-  if (!_currentUser) return;
+  if (!_user) return;
   try {
     const [{ data: days }, { data: settings }] = await Promise.all([
-      _sb.from('tracker_days').select('*').eq('user_id', _currentUser.id),
-      _sb.from('tracker_settings').select('*').eq('user_id', _currentUser.id).maybeSingle()
+      _sb.from('tracker_days').select('*').eq('user_id', _user.id),
+      _sb.from('tracker_settings').select('*').eq('user_id', _user.id).maybeSingle()
     ]);
     if (days) {
       for (const row of days) {
@@ -1546,87 +1541,74 @@ async function loadFromCloud() {
   } catch(e) { console.warn('loadFromCloud:', e); }
 }
 
-let _otpEmail = '';
-
 async function sendOtp() {
   const input = document.getElementById('sync-email');
-  const email = input ? input.value.trim() : '';
+  const email = input?.value.trim();
   if (!email) return;
   _otpEmail = email;
-  const bodyEl = document.getElementById('sync-body');
+  setSyncMsg('⏳ Sending…', '');
   const { error } = await _sb.auth.signInWithOtp({ email, options: { shouldCreateUser: true } });
-  if (error) {
-    const msg = document.getElementById('sync-msg');
-    msg.textContent = '❌ ' + error.message;
-    msg.className = 'sync-msg err';
-  } else {
-    bodyEl.innerHTML = `
-      <p class="sync-desc">A 6-digit code was sent to <strong>${email}</strong>. Enter it below:</p>
-      <div class="sync-row">
-        <input type="text" class="sync-email-input" id="sync-code" placeholder="123456"
-               maxlength="6" inputmode="numeric" onkeydown="if(event.key==='Enter')verifyOtpCode()" />
-        <button class="sync-send-btn" onclick="verifyOtpCode()">✓ Verify</button>
-      </div>
-      <div class="sync-msg" id="sync-msg"></div>
-      <button class="sync-signout-btn" style="margin-top:8px" onclick="renderSyncUI()">← Use a different email</button>`;
-    document.getElementById('sync-code').focus();
-  }
+  if (error) { setSyncMsg('❌ ' + error.message, 'err'); return; }
+  document.getElementById('sync-body').innerHTML = `
+    <p class="sync-desc">Enter the 6-digit code sent to <strong>${email}</strong></p>
+    <div class="sync-row">
+      <input class="sync-email-input" id="sync-otp" type="text" inputmode="numeric"
+             maxlength="6" placeholder="123456" onkeydown="if(event.key==='Enter')verifyOtp()" autofocus />
+      <button class="sync-send-btn" onclick="verifyOtp()">Sign In</button>
+    </div>
+    <div class="sync-msg" id="sync-msg"></div>
+    <button class="sync-signout-btn" style="margin-top:8px" onclick="renderSyncUI()">← Different email</button>`;
+  document.getElementById('sync-otp')?.focus();
 }
 
-async function verifyOtpCode() {
-  const input = document.getElementById('sync-code');
-  const token = input ? input.value.trim() : '';
+async function verifyOtp() {
+  const token = document.getElementById('sync-otp')?.value.trim();
   if (!token || token.length < 6) return;
-  const msg = document.getElementById('sync-msg');
-  msg.textContent = '⏳ Verifying…';
-  msg.className = 'sync-msg';
+  setSyncMsg('⏳ Verifying…', '');
   const { error } = await _sb.auth.verifyOtp({ email: _otpEmail, token, type: 'email' });
-  if (error) {
-    msg.textContent = '❌ ' + error.message;
-    msg.className = 'sync-msg err';
-  }
-  // On success, onAuthStateChange fires SIGNED_IN and handles the rest
+  if (error) setSyncMsg('❌ ' + error.message, 'err');
+  // on success, onAuthStateChange fires and handles the rest
 }
 
 async function signOut() {
   await _sb.auth.signOut();
-  _currentUser = null;
-  renderSyncUI();
+}
+
+function setSyncMsg(text, cls) {
+  const el = document.getElementById('sync-msg');
+  if (el) { el.textContent = text; el.className = 'sync-msg' + (cls ? ' ' + cls : ''); }
 }
 
 function renderSyncUI() {
   const statusEl = document.getElementById('sync-status');
   const bodyEl   = document.getElementById('sync-body');
   if (!statusEl || !bodyEl) return;
-  if (_currentUser) {
-    const email = _currentUser.email || 'your account';
+  if (_user) {
     statusEl.textContent = '✅ Synced';
     statusEl.className   = 'sync-status ok';
     bodyEl.innerHTML = `
       <div class="sync-signed-in">
-        <span>Signed in as <strong>${email}</strong></span>
-        <button class="sync-signout-btn" onclick="signOut()">Sign Out</button>
+        <span>${_user.email}</span>
+        <button class="sync-signout-btn" onclick="signOut()">Sign out</button>
       </div>`;
   } else {
-    statusEl.textContent = 'Not signed in';
+    statusEl.textContent = '';
     statusEl.className   = 'sync-status';
     bodyEl.innerHTML = `
-      <p class="sync-desc">Enter your email to save and sync your progress across all devices.</p>
+      <p class="sync-desc">Enter your email — we'll send a one-time code to sign in.</p>
       <div class="sync-row">
-        <input type="email" class="sync-email-input" id="sync-email" placeholder="your@email.com"
+        <input class="sync-email-input" id="sync-email" type="email" placeholder="your@email.com"
                onkeydown="if(event.key==='Enter')sendOtp()" />
-        <button class="sync-send-btn" onclick="sendOtp()">✉️ Send Code</button>
+        <button class="sync-send-btn" onclick="sendOtp()">Send Code</button>
       </div>
       <div class="sync-msg" id="sync-msg"></div>`;
   }
 }
 
 _sb.auth.onAuthStateChange(async (event, session) => {
-  _currentUser = session?.user || null;
-  if (event === 'SIGNED_IN') {
-    await loadFromCloud();
-    renderAll();
-  }
+  _user = session?.user ?? null;
+  if (event === 'SIGNED_IN') { await loadFromCloud(); renderAll(); }
+  if (event === 'SIGNED_OUT') { renderAll(); }
   renderSyncUI();
 });
 
@@ -1635,8 +1617,8 @@ _sb.auth.onAuthStateChange(async (event, session) => {
 // ═══════════════════════════════════════════════════════
 (async () => {
   const { data: { session } } = await _sb.auth.getSession();
-  _currentUser = session?.user || null;
-  if (_currentUser) await loadFromCloud();
+  _user = session?.user ?? null;
+  if (_user) await loadFromCloud();
   renderAll();
   renderSyncUI();
   scheduleMidnightRefresh();
